@@ -4,7 +4,7 @@ A simple (*forked*) command-line tool to export highlights and notes from Apple 
 
 ## Example MD output
 
-'''
+```
 # Breakneck
 *Dan Wang*
 
@@ -29,7 +29,7 @@ e middle of an apartment building sitting on a hill.
 
 > In 2010, only half of Guizhou’s children attended high school—the lowest rate in the country.
 2021-12-15 11:09 PM EST
-'''
+```
 
 ## Features
 
