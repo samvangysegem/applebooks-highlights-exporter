@@ -4,7 +4,7 @@ A simple (*forked*) command-line tool to export highlights and notes from Apple 
 
 ## Example MD output
 
-```
+```md
 # Breakneck
 *Dan Wang*
 
