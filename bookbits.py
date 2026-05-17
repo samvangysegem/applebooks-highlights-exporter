@@ -1,9 +1,19 @@
 import os
+import re
 import csv
 import glob
 import sqlite3
 import logging
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Dict, List, Tuple
+
+CORE_DATA_EPOCH_OFFSET = 978307200  # seconds between Unix epoch and Core Data epoch (2001-01-01)
+EASTERN = ZoneInfo("America/New_York")
+
+
+def format_timestamp(core_data_ts: float) -> str:
+    return datetime.fromtimestamp(core_data_ts + CORE_DATA_EPOCH_OFFSET, tz=EASTERN).strftime("%Y-%m-%d %I:%M %p %Z")
 from simple_term_menu import TerminalMenu
 
 # Constants
@@ -78,7 +88,15 @@ def get_library_books_with_highlights() -> List[str]:
         logging.error(f"Database error: {e}")
         raise
 
-def export_annotations(asset_id: str, format: str, book_title: str) -> str:
+def parse_chapter_from_cfi(cfi: str) -> str:
+    match = re.search(r'/6/\d+\[([^\]]+)\]', cfi or '')
+    return match.group(1) if match else ""
+
+def cfi_sort_key(cfi: str) -> tuple:
+    # CFIs contain numeric path components; lexicographic sort breaks on e.g. /6/10 vs /6/2
+    return tuple(int(n) for n in re.findall(r'\d+', cfi or ''))
+
+def export_annotations(asset_id: str, format: str, book_title: str, book_author: str = "") -> str:
     """
     Exports annotations (highlights and notes) for the specified book to a file.
 
@@ -86,6 +104,7 @@ def export_annotations(asset_id: str, format: str, book_title: str) -> str:
         asset_id (str): The unique identifier for the book in the Apple Books library.
         format (str): The desired output format ('csv' or 'md').
         book_title (str): The title of the book.
+        book_author (str): The author of the book.
 
     Returns:
         str: The name of the file where annotations were exported.
@@ -101,10 +120,10 @@ def export_annotations(asset_id: str, format: str, book_title: str) -> str:
     try:
         with sqlite3.connect(get_db_path(ANNOTATION_DB_PATTERN)) as conn:
             cursor = conn.cursor()
-            cursor.execute('''SELECT ZANNOTATIONSELECTEDTEXT, ZANNOTATIONNOTE
+            cursor.execute('''SELECT ZANNOTATIONSELECTEDTEXT, ZANNOTATIONNOTE, ZANNOTATIONLOCATION, ZANNOTATIONCREATIONDATE
                               FROM ZAEANNOTATION
                               WHERE ZANNOTATIONASSETID = ? AND ZANNOTATIONSELECTEDTEXT != "";''', (asset_id,))
-            annotations = cursor.fetchall()
+            annotations = sorted(cursor.fetchall(), key=lambda row: cfi_sort_key(row[2]))
     except sqlite3.Error as e:
         logging.error(f"Database error: {e}")
         raise
@@ -114,19 +133,33 @@ def export_annotations(asset_id: str, format: str, book_title: str) -> str:
     try:
         if format.lower() == 'csv':
             with open(filename, 'w', newline='') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=["Highlight", "Notes"], delimiter=";")
+                writer = csv.DictWriter(csvfile, fieldnames=["Chapter", "Highlight", "Notes", "Created"], delimiter=";")
                 writer.writeheader()
-                writer.writerows({"Highlight": highlight.replace("\n", " "),
-                                  "Notes": note.replace("\n", " ") if note else ""}
-                                 for highlight, note in annotations)
+                writer.writerows({"Chapter": parse_chapter_from_cfi(location),
+                                  "Highlight": highlight.replace("\n", " "),
+                                  "Notes": note.replace("\n", " ") if note else "",
+                                  "Created": format_timestamp(ts) if ts else ""}
+                                 for highlight, note, location, ts in annotations)
         else:  # markdown
-            output_md = ""
-            for highlight, note in annotations:
+            header = f"# {book_title}\n"
+            if book_author:
+                header += f"*{book_author}*\n"
+            output_md = header + "\n"
+            current_chapter = None
+            for highlight, note, location, ts in annotations:
+                chapter = parse_chapter_from_cfi(location)
+                if chapter != current_chapter:
+                    current_chapter = chapter
+                    if chapter:
+                        output_md += f"## {chapter}\n\n"
                 output_md += "\n".join([f"> {line}" for line in highlight.split("\n")])
-                output_md += f"\n\n"
+                output_md += "\n"
+                if ts:
+                    output_md += f"{format_timestamp(ts)}\n"
+                output_md += "\n"
                 if note:
                     output_md += f"{note}\n\n"
-            
+
             with open(filename, 'w') as mdfile:
                 mdfile.write(output_md)
             
@@ -196,7 +229,7 @@ def main():
         elif main_choice == 2:  # Export Annotations
             if selected_book and selected_format:
                 try:
-                    filename = export_annotations(selected_book, selected_format, book_details[selected_book][0])
+                    filename = export_annotations(selected_book, selected_format, book_details[selected_book][0], book_details[selected_book][1])
                     print(f"Annotations exported to {filename}")
                     break
                 except (ValueError, sqlite3.Error, IOError) as e:
